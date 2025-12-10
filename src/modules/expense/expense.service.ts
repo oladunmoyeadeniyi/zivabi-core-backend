@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, FindOptionsWhere } from 'typeorm';
 import * as crypto from 'crypto';
 import { ExpenseRequest } from './expense-request.entity';
 import { ExpenseLine } from './expense-line.entity';
@@ -11,6 +11,26 @@ import { WorkflowService } from '../../platform/workflow/workflow.service';
 import { AuditService } from '../../platform/audit/audit.service';
 import { DocumentsService } from '../../platform/documents/documents.service';
 import { AiService } from '../../platform/ai/ai.service';
+
+/**
+ * Valid status transitions for expense requests.
+ */
+const STATUS_TRANSITIONS: Record<string, string[]> = {
+  DRAFT: ['SUBMITTED', 'CANCELLED'],
+  SUBMITTED: ['IN_APPROVAL', 'CANCELLED'],
+  IN_APPROVAL: ['APPROVED', 'REJECTED', 'FINANCE_REVIEW'],
+  FINANCE_REVIEW: ['APPROVED', 'REJECTED'],
+  APPROVED: ['PAID'],
+  REJECTED: [],
+  PAID: ['ARCHIVED'],
+  CANCELLED: [],
+  ARCHIVED: []
+};
+
+interface ListRequestsFilters {
+  status?: string;
+  employeeId?: string;
+}
 
 /**
  * ExpenseService
@@ -42,12 +62,19 @@ export class ExpenseService {
   /**
    * listRequests
    * ------------
-   * Returns all expense requests for a given tenant.
-   *
-   * Later we will add filtering (by employee, status, date range, etc.).
+   * Returns expense requests for a given tenant with optional filtering.
    */
-  async listRequests(tenantId: string): Promise<ExpenseRequest[]> {
-    return this.reqRepo.find({ where: { tenantId }, order: { createdAt: 'DESC' } });
+  async listRequests(tenantId: string, filters?: ListRequestsFilters): Promise<ExpenseRequest[]> {
+    const where: FindOptionsWhere<ExpenseRequest> = { tenantId };
+    
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+    if (filters?.employeeId) {
+      where.employeeId = filters.employeeId;
+    }
+    
+    return this.reqRepo.find({ where, order: { createdAt: 'DESC' } });
   }
 
   /**
@@ -304,6 +331,130 @@ export class ExpenseService {
       action: 'SUBMITTED',
       actorUserId: null,
       afterData: { status: saved.status, workflowInstanceId: saved.workflowInstanceId }
+    });
+
+    return saved;
+  }
+
+  /**
+   * approve
+   * -------
+   * Approves an expense request (manager/finance action).
+   * Validates status transition before changing.
+   */
+  async approve(
+    tenantId: string,
+    requestId: string,
+    approverId: string,
+    comment?: string
+  ): Promise<ExpenseRequest> {
+    const request = await this.reqRepo.findOne({ where: { id: requestId, tenantId } });
+    if (!request) {
+      throw new NotFoundException('Expense request not found');
+    }
+
+    // Validate status transition.
+    const allowedTransitions = STATUS_TRANSITIONS[request.status] || [];
+    if (!allowedTransitions.includes('APPROVED')) {
+      throw new BadRequestException(
+        `Cannot approve request in status '${request.status}'. Request must be in IN_APPROVAL or FINANCE_REVIEW status.`
+      );
+    }
+
+    const oldStatus = request.status;
+    request.status = 'APPROVED';
+    const saved = await this.reqRepo.save(request);
+
+    await this.auditService.logEvent({
+      tenantId,
+      entityType: 'ExpenseRequest',
+      entityId: saved.id,
+      action: 'APPROVED',
+      actorUserId: approverId,
+      beforeData: { status: oldStatus },
+      afterData: { status: saved.status },
+      metadata: comment ? { comment } : null
+    });
+
+    return saved;
+  }
+
+  /**
+   * reject
+   * ------
+   * Rejects an expense request with a reason.
+   */
+  async reject(
+    tenantId: string,
+    requestId: string,
+    approverId: string,
+    reason: string
+  ): Promise<ExpenseRequest> {
+    const request = await this.reqRepo.findOne({ where: { id: requestId, tenantId } });
+    if (!request) {
+      throw new NotFoundException('Expense request not found');
+    }
+
+    const allowedTransitions = STATUS_TRANSITIONS[request.status] || [];
+    if (!allowedTransitions.includes('REJECTED')) {
+      throw new BadRequestException(
+        `Cannot reject request in status '${request.status}'. Request must be in IN_APPROVAL or FINANCE_REVIEW status.`
+      );
+    }
+
+    const oldStatus = request.status;
+    request.status = 'REJECTED';
+    const saved = await this.reqRepo.save(request);
+
+    await this.auditService.logEvent({
+      tenantId,
+      entityType: 'ExpenseRequest',
+      entityId: saved.id,
+      action: 'REJECTED',
+      actorUserId: approverId,
+      beforeData: { status: oldStatus },
+      afterData: { status: saved.status },
+      metadata: { reason }
+    });
+
+    return saved;
+  }
+
+  /**
+   * cancel
+   * ------
+   * Cancels an expense request (employee action).
+   * Only allowed for DRAFT or SUBMITTED requests.
+   */
+  async cancel(
+    tenantId: string,
+    requestId: string,
+    userId: string
+  ): Promise<ExpenseRequest> {
+    const request = await this.reqRepo.findOne({ where: { id: requestId, tenantId } });
+    if (!request) {
+      throw new NotFoundException('Expense request not found');
+    }
+
+    const allowedTransitions = STATUS_TRANSITIONS[request.status] || [];
+    if (!allowedTransitions.includes('CANCELLED')) {
+      throw new BadRequestException(
+        `Cannot cancel request in status '${request.status}'. Request can only be cancelled when in DRAFT or SUBMITTED status.`
+      );
+    }
+
+    const oldStatus = request.status;
+    request.status = 'CANCELLED';
+    const saved = await this.reqRepo.save(request);
+
+    await this.auditService.logEvent({
+      tenantId,
+      entityType: 'ExpenseRequest',
+      entityId: saved.id,
+      action: 'CANCELLED',
+      actorUserId: userId,
+      beforeData: { status: oldStatus },
+      afterData: { status: saved.status }
     });
 
     return saved;

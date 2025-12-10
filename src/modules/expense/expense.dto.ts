@@ -88,3 +88,25 @@ export class FinanceReviewUpdateDto {
   @IsString()
   comment?: string;
 }
+
+/**
+ * ApproveExpenseRequestDto
+ * ------------------------
+ * Data for approving an expense request.
+ */
+export class ApproveExpenseRequestDto {
+  @IsOptional()
+  @IsString()
+  comment?: string;
+}
+
+/**
+ * RejectExpenseRequestDto
+ * -----------------------
+ * Data for rejecting an expense request.
+ */
+export class RejectExpenseRequestDto {
+  @IsString()
+  @IsNotEmpty()
+  reason!: string;
+}

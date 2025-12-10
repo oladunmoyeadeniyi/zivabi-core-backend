@@ -1,7 +1,14 @@
-import { Body, Controller, Param, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ExpenseService } from './expense.service';
-import { CreateExpenseRequestDto, CreateExpenseLineDto, SubmitExpenseRequestDto, FinanceReviewUpdateDto } from './expense.dto';
+import {
+  CreateExpenseRequestDto,
+  CreateExpenseLineDto,
+  SubmitExpenseRequestDto,
+  FinanceReviewUpdateDto,
+  ApproveExpenseRequestDto,
+  RejectExpenseRequestDto
+} from './expense.dto';
 import { JwtAuthGuard } from '../../platform/auth/jwt-auth.guard';
 import { Permissions } from '../../platform/rbac/permissions.decorator';
 import { CurrentUser, CurrentUserPayload } from '../../platform/auth/current-user.decorator';
@@ -17,6 +24,18 @@ import { Express } from 'express';
  *   the endpoints are aligned with the security model.
  * - For now, we keep endpoints minimal and will extend them alongside
  *   the UI and PRD requirements.
+ *
+ * Production-ready endpoints include:
+ * - GET /expense/requests - list requests with optional filters
+ * - GET /expense/requests/:requestId - get single request with lines
+ * - POST /expense/requests - create new draft request
+ * - POST /expense/requests/:requestId/lines - add line to request
+ * - POST /expense/requests/:requestId/submit - submit for approval
+ * - POST /expense/requests/:requestId/approve - approve request
+ * - POST /expense/requests/:requestId/reject - reject request
+ * - POST /expense/requests/:requestId/cancel - cancel request
+ * - POST /expense/lines/:lineId/receipts - upload receipt
+ * - POST /expense/lines/:lineId/finance-review - finance adjustment
  */
 @Controller('expense')
 export class ExpenseController {
@@ -25,19 +44,52 @@ export class ExpenseController {
   /**
    * GET /expense/requests
    * ---------------------
-   * Lists all expense requests for a tenant.
-   *
-   * TEMP: tenantId is supplied via query/body until we wire JWT tenant context.
+   * Lists expense requests for the current tenant.
+   * Optional query filters: status, employeeId.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Permissions('expense.view')
+  @Get('requests')
+  async listRequests(
+    @CurrentUser() user: CurrentUserPayload | undefined,
+    @Query('status') status?: string,
+    @Query('employeeId') employeeId?: string
+  ) {
+    if (!user) {
+      throw new BadRequestException('User context missing');
+    }
+    return this.expenseService.listRequests(user.tenantId, { status, employeeId });
+  }
+
+  /**
+   * POST /expense/requests/list (legacy endpoint, kept for compatibility)
    */
   @UseGuards(JwtAuthGuard)
   @Permissions('expense.view')
   @Post('requests/list')
-  async listRequests(@CurrentUser() user: CurrentUserPayload | undefined) {
+  async listRequestsPost(@CurrentUser() user: CurrentUserPayload | undefined) {
     if (!user) {
-      // JwtAuthGuard should normally ensure user is defined.
-      throw new Error('User context missing');
+      throw new BadRequestException('User context missing');
     }
     return this.expenseService.listRequests(user.tenantId);
+  }
+
+  /**
+   * GET /expense/requests/:requestId
+   * ---------------------------------
+   * Returns a single request with its lines.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Permissions('expense.view')
+  @Get('requests/:requestId')
+  async getRequestById(
+    @Param('requestId') requestId: string,
+    @CurrentUser() user: CurrentUserPayload | undefined
+  ) {
+    if (!user) {
+      throw new BadRequestException('User context missing');
+    }
+    return this.expenseService.getRequestWithLines(user.tenantId, requestId);
   }
 
   /**
@@ -148,6 +200,62 @@ export class ExpenseController {
   }
 
   /**
+   * POST /expense/requests/:requestId/approve
+   * -----------------------------------------
+   * Approves an expense request (manager action).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Permissions('expense.approve')
+  @Post('requests/:requestId/approve')
+  async approve(
+    @Param('requestId') requestId: string,
+    @Body() body: ApproveExpenseRequestDto,
+    @CurrentUser() user: CurrentUserPayload | undefined
+  ) {
+    if (!user) {
+      throw new BadRequestException('User context missing');
+    }
+    return this.expenseService.approve(user.tenantId, requestId, user.id, body.comment);
+  }
+
+  /**
+   * POST /expense/requests/:requestId/reject
+   * ----------------------------------------
+   * Rejects an expense request (manager action).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Permissions('expense.approve')
+  @Post('requests/:requestId/reject')
+  async reject(
+    @Param('requestId') requestId: string,
+    @Body() body: RejectExpenseRequestDto,
+    @CurrentUser() user: CurrentUserPayload | undefined
+  ) {
+    if (!user) {
+      throw new BadRequestException('User context missing');
+    }
+    return this.expenseService.reject(user.tenantId, requestId, user.id, body.reason);
+  }
+
+  /**
+   * POST /expense/requests/:requestId/cancel
+   * ----------------------------------------
+   * Cancels an expense request (employee action, only if still in DRAFT/SUBMITTED).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Permissions('expense.submit')
+  @Post('requests/:requestId/cancel')
+  async cancel(
+    @Param('requestId') requestId: string,
+    @CurrentUser() user: CurrentUserPayload | undefined
+  ) {
+    if (!user) {
+      throw new BadRequestException('User context missing');
+    }
+    return this.expenseService.cancel(user.tenantId, requestId, user.id);
+  }
+
+  /**
    * POST /expense/lines/:lineId/receipts
    * ------------------------------------
    * Uploads a receipt file and links it to a specific expense line.
@@ -163,7 +271,7 @@ export class ExpenseController {
     @CurrentUser() user: CurrentUserPayload | undefined
   ) {
     if (!user) {
-      throw new Error('User context missing');
+      throw new BadRequestException('User context missing');
     }
     return this.expenseService.attachReceiptToLine(user.tenantId, lineId, file);
   }
