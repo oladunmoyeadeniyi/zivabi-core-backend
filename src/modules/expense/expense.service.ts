@@ -221,7 +221,7 @@ export class ExpenseService {
    * links it to the specified ExpenseLine. Also calls the AI stub to
    * obtain an OCR confidence score and duplicate hint.
    */
-  async attachReceiptToLine(tenantId: string, lineId: string, file: Express.Multer.File) {
+  async attachReceiptToLine(tenantId: string, lineId: string, file: { buffer?: Buffer; originalname: string; mimetype: string; size: number }) {
     const line = await this.lineRepo.findOne({ where: { id: lineId, tenantId } });
     if (!line) {
       throw new NotFoundException('Expense line not found');

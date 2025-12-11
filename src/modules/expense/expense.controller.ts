@@ -12,7 +12,6 @@ import {
 import { JwtAuthGuard } from '../../platform/auth/jwt-auth.guard';
 import { Permissions } from '../../platform/rbac/permissions.decorator';
 import { CurrentUser, CurrentUserPayload } from '../../platform/auth/current-user.decorator';
-import { Express } from 'express';
 
 /**
  * ExpenseController
@@ -266,7 +265,7 @@ export class ExpenseController {
   @UseInterceptors(FileInterceptor('file'))
   async uploadReceipt(
     @Param('lineId') lineId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: any,
     @Body() _body: any,
     @CurrentUser() user: CurrentUserPayload | undefined
   ) {
