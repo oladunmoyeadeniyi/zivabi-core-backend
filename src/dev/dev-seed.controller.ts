@@ -122,7 +122,9 @@ export class DevSeedController {
     if (body?.tenantId) {
       tenant = await this.tenantRepo.findOne({ where: { id: body.tenantId } });
     } else {
-      tenant = await this.tenantRepo.findOne();
+      // Get the first tenant in the database
+      const tenants = await this.tenantRepo.find({ take: 1 });
+      tenant = tenants.length > 0 ? tenants[0] : null;
     }
 
     if (!tenant) {
